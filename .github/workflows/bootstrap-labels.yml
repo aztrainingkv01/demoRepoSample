@@ -1,0 +1,46 @@
+name: Bootstrap PR Labels
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  create-labels:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create required labels if missing
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const labels = [
+              { name: "risk-low", color: "2DA44E", description: "AI risk classification: low" },
+              { name: "risk-medium", color: "D4A72C", description: "AI risk classification: medium" },
+              { name: "risk-high", color: "CF222E", description: "AI risk classification: high" },
+              { name: "override-approved", color: "8250DF", description: "Explicit human-approved override" }
+            ];
+
+            const existing = await github.rest.issues.listLabelsForRepo({
+              owner,
+              repo,
+              per_page: 100
+            });
+
+            const existingNames = new Set(existing.data.map(l => l.name));
+
+            for (const label of labels) {
+              if (!existingNames.has(label.name)) {
+                await github.rest.issues.createLabel({
+                  owner,
+                  repo,
+                  ...label
+                });
+                core.info(`Created label: ${label.name}`);
+              } else {
+                core.info(`Label already exists: ${label.name}`);
+              }
+            }
