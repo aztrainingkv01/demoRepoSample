@@ -1,5 +1,1 @@
-{
-  "level": "HIGH",
-  "reasons": [...],
-  "controls": [...]
-}
+
