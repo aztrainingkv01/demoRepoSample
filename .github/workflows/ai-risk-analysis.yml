@@ -1,1 +1,123 @@
+name: AI Risk Analysis (Labels + PR Summary)
 
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ai-risk-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  assess-risk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compute risk using heuristic AI starter
+        run: |
+          python .github/scripts/ai_risk_assess.py \
+            --base "${{ github.event.pull_request.base.sha }}" \
+            --head "${{ github.event.pull_request.head.sha }}" \
+            --out ai-risk.json
+
+      - name: Apply risk label and comment summary
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            const risk = JSON.parse(fs.readFileSync('ai-risk.json', 'utf8'));
+            const newRiskLabel = `risk-${risk.level.toLowerCase()}`;
+
+            // 1) Remove any existing risk-* labels
+            const existing = await github.rest.issues.listLabelsOnIssue({
+              owner,
+              repo,
+              issue_number: prNumber
+            });
+
+            const riskLabels = existing.data
+              .map(l => l.name)
+              .filter(n => n.startsWith('risk-'));
+
+            for (const lbl of riskLabels) {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number: prNumber,
+                name: lbl
+              }).catch(() => {});
+            }
+
+            // 2) Add the new risk label
+            await github.rest.issues.addLabels({
+              owner,
+              repo,
+              issue_number: prNumber,
+              labels: [newRiskLabel]
+            });
+
+            // 3) Create a stable comment body
+            const marker = "<!-- AI_RISK_ASSESSMENT -->";
+            const body =
+`${marker}
+## 🤖 AI Risk Assessment (Heuristic Starter)
+
+**Risk Level:** ${risk.level} (confidence: ${risk.confidence})
+
+**Reasons:**
+${risk.reasons.map(r => `- ${r}`).join("\n")}
+
+**Recommended Controls:**
+${risk.controls.map(c => `- ${c}`).join("\n")}
+
+**Changed files:** ${risk.changed_files_count}
+
+> Advisory only. Branch protections and required reviews remain enforced by GitHub settings.`;
+
+            // 4) Upsert comment: update existing bot comment if present; else create a new one
+            const comments = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100
+            });
+
+            const existingComment = comments.data.find(c => c.body && c.body.includes(marker));
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existingComment.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body
+              });
+            }
+
+            core.info(`Applied label ${newRiskLabel} and updated AI risk comment.`);
